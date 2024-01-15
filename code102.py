@@ -6,22 +6,20 @@
 DOORBELL_PIN = 26
 # Number of seconds to keep the call active
 DOORBELL_SCREEN_ACTIVE_S = 60
-# ID of the JITSI meeting room
-JITSI_ID = None  # If None, the program generates a random UUID
-# JITSI_ID = "hackershackdoorbellexample"
-# Path to the SFX file
-RING_SFX_PATH = None  # If None, no sound effect plays
-# RING_SFX_PATH = "/home/pi/ring.wav"
 # Enables email notifications
-ENABLE_EMAIL = False
-# Email you want to send the notification from (only works with gmail)
+ENABLE_EMAIL = True
+# Email you want to send the notification from (only works with Gmail)
 FROM_EMAIL = 'sender@gmail.com'
 # You can generate an app password here to avoid storing your password in plain text
-# this should also come from an environment variable
+# This should also come from an environment variable
 # https://support.google.com/accounts/answer/185833?hl=en
 FROM_EMAIL_PASSWORD = 'password'
 # Email you want to send the update to
 TO_EMAIL = 'receiver@gmail.com'
+
+# Directory and filename parameters for image capture
+dir = './visitors/'
+prefix = 'photo'
 
 
 #############
@@ -41,60 +39,30 @@ from email.mime.image import MIMEImage
 
 try:
     import RPi.GPIO as GPIO
+    import picamera
 except RuntimeError:
-    print("Error importing RPi.GPIO. This is probably because you need superuser. Try running again with 'sudo'.")
+    print("Error importing RPi.GPIO or picamera. This is probably because you need superuser. Try running again with 'sudo'.")
 
 
-def send_email_notification(chat_url):
+def send_email_notification(image_filename):
     if ENABLE_EMAIL:
         sender = EmailSender(FROM_EMAIL, FROM_EMAIL_PASSWORD)
         email = Email(
             sender,
-            'Video Doorbell',
-            'Notification: A visitor is waiting',
-            'A video doorbell caller is waiting on the virtual meeting room. Meet them at %s' % chat_url
+            'Doorbell Notification',
+            'A visitor is waiting at your door',
+            'A visitor is waiting at your door. Please check the attached photo.',
+            image_filename
         )
         email.send(TO_EMAIL)
 
 
 def ring_doorbell(pin):
-    SoundEffect(RING_SFX_PATH).play()
+    # Capture an image when the doorbell is pressed
+    image_filename = capture_img()
 
-    chat_id = JITSI_ID if JITSI_ID else str(uuid.uuid4())
-    video_chat = VideoChat(chat_id)
-    send_email_notification(video_chat.get_chat_url())
-
-    video_chat.start()
-    time.sleep(DOORBELL_SCREEN_ACTIVE_S)
-    video_chat.end()
-
-
-class SoundEffect:
-    def __init__(self, filepath):
-        self.filepath = filepath
-
-    def play(self):
-        if self.filepath:
-            subprocess.Popen(["aplay", self.filepath])
-
-
-class VideoChat:
-    def __init__(self, chat_id):
-        self.chat_id = chat_id
-        self._process = None
-
-    def get_chat_url(self):
-        return "http://meet.jit.si/%s" % self.chat_id
-
-    def start(self):
-        if not self._process and self.chat_id:
-            self._process = subprocess.Popen(["chromium-browser", "-kiosk", self.get_chat_url()])
-        else:
-            print("Can't start video chat -- already started or missing chat id")
-
-    def end(self):
-        if self._process:
-            os.kill(self._process.pid, signal.SIGTERM)
+    # Send email notification with the captured image
+    send_email_notification(image_filename)
 
 
 class EmailSender:
@@ -104,11 +72,12 @@ class EmailSender:
 
 
 class Email:
-    def __init__(self, sender, subject, preamble, body):
+    def __init__(self, sender, subject, preamble, body, image_filename):
         self.sender = sender
         self.subject = subject
         self.preamble = preamble
         self.body = body
+        self.image_filename = image_filename
 
     def send(self, to_email):
         msgRoot = MIMEMultipart('related')
@@ -121,6 +90,11 @@ class Email:
         msgRoot.attach(msgAlternative)
         msgText = MIMEText(self.body)
         msgAlternative.attach(msgText)
+
+        # Attach the captured image
+        with open(self.image_filename, 'rb') as image_file:
+            msgImage = MIMEImage(image_file.read())
+            msgRoot.attach(msgImage)
 
         smtp = smtplib.SMTP('smtp.gmail.com', 587)
         smtp.starttls()
@@ -157,6 +131,24 @@ class Doorbell:
 
     def _cleanup(self):
         GPIO.cleanup(self._doorbell_button_pin)
+
+
+def capture_img():
+    if not os.path.exists(dir):
+        os.makedirs(dir)
+
+    files = sorted(glob.glob(os.path.join(dir, prefix + '[0-9][0-9][0-9].jpg')))
+    count = 0
+
+    if len(files) > 0:
+        count = int(files[-1][-7:-4]) + 1
+
+    filename = os.path.join(dir, prefix + '%03d.jpg' % count)
+
+    with picamera.PiCamera() as camera:
+        camera.capture(filename)
+
+    return filename
 
 
 if __name__ == "__main__":
